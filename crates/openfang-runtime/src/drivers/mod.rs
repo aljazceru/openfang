@@ -146,6 +146,11 @@ fn provider_defaults(provider: &str) -> Option<ProviderDefaults> {
             api_key_env: "OPENAI_API_KEY",
             key_required: true,
         }),
+        "codex-oauth" => Some(ProviderDefaults {
+            base_url: "https://chatgpt.com/backend-api/codex",
+            api_key_env: "CODEX_OAUTH_TOKEN",
+            key_required: true,
+        }),
         "claude-code" => Some(ProviderDefaults {
             base_url: "",
             api_key_env: "",
@@ -282,7 +287,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
         return Ok(Arc::new(gemini::GeminiDriver::new(api_key, base_url)));
     }
 
-    // Codex — reuses OpenAI driver with credential sync from Codex CLI
+    // Codex — reuses OpenAI driver with API key or credential sync from Codex CLI
     if provider == "codex" || provider == "openai-codex" {
         let api_key = config
             .api_key
@@ -298,6 +303,25 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             .base_url
             .clone()
             .unwrap_or_else(|| OPENAI_BASE_URL.to_string());
+        return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
+    }
+
+    // Codex OAuth — isolated provider using Codex CLI credentials
+    if provider == "codex-oauth" {
+        let api_key = config
+            .api_key
+            .clone()
+            .or_else(|| std::env::var("CODEX_OAUTH_TOKEN").ok())
+            .or_else(crate::model_catalog::read_codex_oauth_access_token)
+            .ok_or_else(|| {
+                LlmError::MissingApiKey(
+                    "Run `codex login` or set CODEX_OAUTH_TOKEN".to_string(),
+                )
+            })?;
+        let base_url = config
+            .base_url
+            .clone()
+            .unwrap_or_else(|| "https://chatgpt.com/backend-api/codex".to_string());
         return Ok(Arc::new(openai::OpenAIDriver::new(api_key, base_url)));
     }
 
@@ -421,7 +445,7 @@ pub fn create_driver(config: &DriverConfig) -> Result<Arc<dyn LlmDriver>, LlmErr
             "Unknown provider '{}'. Supported: anthropic, gemini, openai, groq, openrouter, \
              deepseek, together, mistral, fireworks, ollama, vllm, lmstudio, perplexity, \
              cohere, ai21, cerebras, sambanova, huggingface, xai, replicate, github-copilot, \
-             chutes, venice, codex, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
+             chutes, venice, codex, codex-oauth, claude-code. Or set base_url for a custom OpenAI-compatible endpoint.",
             provider
         ),
     })
@@ -495,6 +519,7 @@ pub fn known_providers() -> &'static [&'static str] {
         "chutes",
         "venice",
         "codex",
+        "codex-oauth",
         "claude-code",
         "qwen-code",
     ]
@@ -523,6 +548,14 @@ mod tests {
     fn test_provider_defaults_ollama() {
         let d = provider_defaults("ollama").unwrap();
         assert!(!d.key_required);
+    }
+
+    #[test]
+    fn test_provider_defaults_codex_oauth() {
+        let d = provider_defaults("codex-oauth").unwrap();
+        assert_eq!(d.base_url, OPENAI_BASE_URL);
+        assert_eq!(d.api_key_env, "CODEX_OAUTH_TOKEN");
+        assert!(d.key_required);
     }
 
     #[test]
@@ -597,9 +630,10 @@ mod tests {
         assert!(providers.contains(&"volcengine"));
         assert!(providers.contains(&"chutes"));
         assert!(providers.contains(&"codex"));
+        assert!(providers.contains(&"codex-oauth"));
         assert!(providers.contains(&"claude-code"));
         assert!(providers.contains(&"qwen-code"));
-        assert_eq!(providers.len(), 35);
+        assert_eq!(providers.len(), 36);
     }
 
     #[test]

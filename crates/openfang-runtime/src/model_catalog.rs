@@ -92,6 +92,7 @@ impl ModelCatalog {
                     std::env::var("OPENAI_API_KEY").is_ok()
                         || read_codex_credential().is_some()
                 }
+                "codex-oauth" => read_codex_oauth_access_token().is_some(),
                 // claude-code is handled above (before key_required check)
                 _ => false,
             };
@@ -400,8 +401,44 @@ pub fn read_codex_credential() -> Option<String> {
     }
 
     parsed
-        .get("api_key")
+        .get("OPENAI_API_KEY")
+        .or_else(|| parsed.get("api_key"))
         .or_else(|| parsed.get("token"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+}
+
+/// Read a Codex OAuth access token from the Codex CLI credential file.
+///
+/// Newer Codex CLI builds store ChatGPT/Codex subscription auth as nested
+/// OAuth tokens under `tokens.access_token`, not as a top-level API key.
+pub fn read_codex_oauth_access_token() -> Option<String> {
+    let codex_home = std::env::var("CODEX_HOME")
+        .map(std::path::PathBuf::from)
+        .ok()
+        .or_else(|| {
+            #[cfg(target_os = "windows")]
+            {
+                std::env::var("USERPROFILE")
+                    .ok()
+                    .map(|h| std::path::PathBuf::from(h).join(".codex"))
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                std::env::var("HOME")
+                    .ok()
+                    .map(|h| std::path::PathBuf::from(h).join(".codex"))
+            }
+        })?;
+
+    let auth_path = codex_home.join("auth.json");
+    let content = std::fs::read_to_string(&auth_path).ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    parsed
+        .get("tokens")
+        .and_then(|tokens| tokens.get("access_token"))
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .map(|s| s.to_string())
@@ -754,6 +791,15 @@ fn builtin_providers() -> Vec<ProviderInfo> {
             auth_status: AuthStatus::Missing,
             model_count: 0,
         },
+        ProviderInfo {
+            id: "codex-oauth".into(),
+            display_name: "Codex OAuth".into(),
+            api_key_env: "CODEX_OAUTH_TOKEN".into(),
+            base_url: "https://chatgpt.com/backend-api/codex".into(),
+            key_required: true,
+            auth_status: AuthStatus::Missing,
+            model_count: 0,
+        },
         // ── Claude Code CLI ─────────────────────────────────────────
         ProviderInfo {
             id: "claude-code".into(),
@@ -789,6 +835,7 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("gpt4o", "gpt-4o"),
         ("gpt4-mini", "gpt-4o-mini"),
         ("gpt5", "gpt-5.2"),
+        ("gpt5-pro", "gpt-5.2-pro"),
         ("gpt5-mini", "gpt-5-mini"),
         ("flash", "gemini-2.5-flash"),
         ("gemini-pro", "gemini-3.1-pro-preview"),
@@ -840,6 +887,14 @@ fn builtin_aliases() -> HashMap<String, String> {
         ("codex", "codex/gpt-4.1"),
         ("codex-4.1", "codex/gpt-4.1"),
         ("codex-o4", "codex/o4-mini"),
+        ("codex-oauth", "codex-oauth/gpt-5.4"),
+        ("codex-oauth-latest", "codex-oauth/gpt-5.4"),
+        ("codex-oauth-5.4", "codex-oauth/gpt-5.4"),
+        ("codex-oauth-5.2", "codex-oauth/gpt-5.2-codex"),
+        ("codex-oauth-5.1", "codex-oauth/gpt-5.1-codex"),
+        ("codex-oauth-max", "codex-oauth/gpt-5.1-codex-max"),
+        ("codex-oauth-mini", "codex-oauth/gpt-5.1-codex-mini"),
+        ("codex-oauth-5", "codex-oauth/gpt-5-codex"),
         // Venice aliases
         ("venice", "venice-uncensored"),
         // Claude Code aliases
@@ -1184,6 +1239,20 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             max_output_tokens: 128_000,
             input_cost_per_m: 1.75,
             output_cost_per_m: 14.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![],
+        },
+        ModelCatalogEntry {
+            id: "gpt-5-pro".into(),
+            display_name: "GPT-5 Pro".into(),
+            provider: "openai".into(),
+            tier: ModelTier::Frontier,
+            context_window: 400_000,
+            max_output_tokens: 272_000,
+            input_cost_per_m: 15.00,
+            output_cost_per_m: 120.0,
             supports_tools: true,
             supports_vision: true,
             supports_streaming: true,
@@ -3378,7 +3447,7 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             aliases: vec![],
         },
         // ══════════════════════════════════════════════════════════════
-        // OpenAI Codex (2) — reuses OpenAI driver
+        // OpenAI Codex (2) — legacy Codex/API-key path
         // ══════════════════════════════════════════════════════════════
         ModelCatalogEntry {
             id: "codex/gpt-4.1".into(),
@@ -3407,6 +3476,97 @@ fn builtin_models() -> Vec<ModelCatalogEntry> {
             supports_vision: true,
             supports_streaming: true,
             aliases: vec!["codex-o4".into()],
+        },
+        // ══════════════════════════════════════════════════════════════
+        // Codex OAuth (5) — GPT-5 Codex family via Codex CLI auth
+        // ══════════════════════════════════════════════════════════════
+        ModelCatalogEntry {
+            id: "codex-oauth/gpt-5.4".into(),
+            display_name: "GPT-5.4 (OAuth)".into(),
+            provider: "codex-oauth".into(),
+            tier: ModelTier::Frontier,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 0.0,
+            output_cost_per_m: 0.0,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec![
+                "codex-oauth".into(),
+                "codex-oauth-latest".into(),
+                "codex-oauth-5.4".into(),
+            ],
+        },
+        ModelCatalogEntry {
+            id: "codex-oauth/gpt-5.2-codex".into(),
+            display_name: "GPT-5.2-Codex (OAuth)".into(),
+            provider: "codex-oauth".into(),
+            tier: ModelTier::Frontier,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 1.75,
+            output_cost_per_m: 14.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex-oauth-5.2".into()],
+        },
+        ModelCatalogEntry {
+            id: "codex-oauth/gpt-5.1-codex".into(),
+            display_name: "GPT-5.1-Codex (OAuth)".into(),
+            provider: "codex-oauth".into(),
+            tier: ModelTier::Frontier,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 1.25,
+            output_cost_per_m: 10.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex-oauth-5.1".into()],
+        },
+        ModelCatalogEntry {
+            id: "codex-oauth/gpt-5.1-codex-max".into(),
+            display_name: "GPT-5.1-Codex-Max (OAuth)".into(),
+            provider: "codex-oauth".into(),
+            tier: ModelTier::Frontier,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 1.25,
+            output_cost_per_m: 10.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex-oauth-max".into()],
+        },
+        ModelCatalogEntry {
+            id: "codex-oauth/gpt-5.1-codex-mini".into(),
+            display_name: "GPT-5.1-Codex mini (OAuth)".into(),
+            provider: "codex-oauth".into(),
+            tier: ModelTier::Balanced,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 0.25,
+            output_cost_per_m: 2.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex-oauth-mini".into()],
+        },
+        ModelCatalogEntry {
+            id: "codex-oauth/gpt-5-codex".into(),
+            display_name: "GPT-5-Codex (OAuth)".into(),
+            provider: "codex-oauth".into(),
+            tier: ModelTier::Frontier,
+            context_window: 400_000,
+            max_output_tokens: 128_000,
+            input_cost_per_m: 1.25,
+            output_cost_per_m: 10.00,
+            supports_tools: true,
+            supports_vision: true,
+            supports_streaming: true,
+            aliases: vec!["codex-oauth-5".into()],
         },
         // ══════════════════════════════════════════════════════════════
         // Claude Code CLI (3) — subprocess-based
@@ -3961,6 +4121,15 @@ mod tests {
     }
 
     #[test]
+    fn test_codex_oauth_provider() {
+        let catalog = ModelCatalog::new();
+        let codex = catalog.get_provider("codex-oauth").unwrap();
+        assert_eq!(codex.display_name, "Codex OAuth");
+        assert_eq!(codex.api_key_env, "CODEX_OAUTH_TOKEN");
+        assert!(codex.key_required);
+    }
+
+    #[test]
     fn test_codex_models() {
         let catalog = ModelCatalog::new();
         let models = catalog.models_by_provider("codex");
@@ -3974,6 +4143,26 @@ mod tests {
         let catalog = ModelCatalog::new();
         let entry = catalog.find_model("codex").unwrap();
         assert_eq!(entry.id, "codex/gpt-4.1");
+    }
+
+    #[test]
+    fn test_codex_oauth_models() {
+        let catalog = ModelCatalog::new();
+        let models = catalog.models_by_provider("codex-oauth");
+        assert_eq!(models.len(), 6);
+        assert!(models.iter().any(|m| m.id == "codex-oauth/gpt-5.4"));
+        assert!(models.iter().any(|m| m.id == "codex-oauth/gpt-5.2-codex"));
+        assert!(models.iter().any(|m| m.id == "codex-oauth/gpt-5.1-codex"));
+        assert!(models.iter().any(|m| m.id == "codex-oauth/gpt-5.1-codex-max"));
+        assert!(models.iter().any(|m| m.id == "codex-oauth/gpt-5.1-codex-mini"));
+        assert!(models.iter().any(|m| m.id == "codex-oauth/gpt-5-codex"));
+    }
+
+    #[test]
+    fn test_codex_oauth_aliases() {
+        let catalog = ModelCatalog::new();
+        let entry = catalog.find_model("codex-oauth").unwrap();
+        assert_eq!(entry.id, "codex-oauth/gpt-5.4");
     }
 
     #[test]

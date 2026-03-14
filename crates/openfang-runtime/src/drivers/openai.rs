@@ -44,6 +44,533 @@ impl OpenAIDriver {
         self.extra_headers = headers;
         self
     }
+
+    fn uses_codex_oauth_responses(&self) -> bool {
+        self.base_url.contains("chatgpt.com/backend-api/codex")
+    }
+
+    fn codex_oauth_instructions(request: &CompletionRequest) -> String {
+        request
+            .system
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| "You are OpenFang, a concise and helpful coding assistant.".to_string())
+    }
+
+    fn codex_oauth_reasoning_effort(request: &CompletionRequest) -> &'static str {
+        match request
+            .thinking
+            .as_ref()
+            .map(|t| t.budget_tokens)
+            .unwrap_or(8_192)
+        {
+            0..=2_048 => "low",
+            2_049..=8_192 => "medium",
+            8_193..=20_000 => "high",
+            _ => "xhigh",
+        }
+    }
+
+    fn build_codex_oauth_input(request: &CompletionRequest) -> Vec<serde_json::Value> {
+        let mut items = Vec::new();
+
+        for msg in &request.messages {
+            match (&msg.role, &msg.content) {
+                (Role::System, MessageContent::Text(_)) => {}
+                (Role::User, MessageContent::Text(text)) => {
+                    items.push(serde_json::json!({
+                        "role": "user",
+                        "content": [{"type": "input_text", "text": text}],
+                    }));
+                }
+                (Role::Assistant, MessageContent::Text(text)) => {
+                    items.push(serde_json::json!({
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": text}],
+                    }));
+                }
+                (Role::User, MessageContent::Blocks(blocks)) => {
+                    let mut parts = Vec::new();
+                    for block in blocks {
+                        match block {
+                            ContentBlock::ToolResult {
+                                tool_use_id,
+                                content,
+                                ..
+                            } => {
+                                items.push(serde_json::json!({
+                                    "type": "function_call_output",
+                                    "call_id": tool_use_id,
+                                    "output": if content.is_empty() { "(empty)".to_string() } else { content.clone() },
+                                }));
+                            }
+                            ContentBlock::Text { text, .. } => {
+                                parts.push(serde_json::json!({
+                                    "type": "input_text",
+                                    "text": text,
+                                }));
+                            }
+                            ContentBlock::Image { media_type, data } => {
+                                parts.push(serde_json::json!({
+                                    "type": "input_image",
+                                    "image_url": format!("data:{media_type};base64,{data}"),
+                                }));
+                            }
+                            ContentBlock::Thinking { .. } => {}
+                            _ => {}
+                        }
+                    }
+                    if !parts.is_empty() {
+                        items.push(serde_json::json!({
+                            "role": "user",
+                            "content": parts,
+                        }));
+                    }
+                }
+                (Role::Assistant, MessageContent::Blocks(blocks)) => {
+                    let mut text_parts = Vec::new();
+                    for block in blocks {
+                        match block {
+                            ContentBlock::Text { text, .. } => text_parts.push(text.clone()),
+                            ContentBlock::ToolUse { id, name, input, .. } => {
+                                items.push(serde_json::json!({
+                                    "type": "function_call",
+                                    "call_id": id,
+                                    "name": name,
+                                    "arguments": serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string()),
+                                }));
+                            }
+                            ContentBlock::Thinking { .. } => {}
+                            _ => {}
+                        }
+                    }
+                    if !text_parts.is_empty() {
+                        items.push(serde_json::json!({
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": text_parts.join("")}],
+                        }));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        items
+    }
+
+    fn build_codex_oauth_tools(request: &CompletionRequest) -> Vec<serde_json::Value> {
+        request
+            .tools
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "type": "function",
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": openfang_types::tool::normalize_schema_for_provider(
+                        &t.input_schema,
+                        "openai",
+                    ),
+                })
+            })
+            .collect()
+    }
+
+    fn parse_codex_oauth_response(
+        parsed: &serde_json::Value,
+    ) -> Result<CompletionResponse, LlmError> {
+        let mut content = Vec::new();
+        let mut tool_calls = Vec::new();
+
+        if let Some(output) = parsed.get("output").and_then(|v| v.as_array()) {
+            for item in output {
+                match item.get("type").and_then(|v| v.as_str()) {
+                    Some("message") => {
+                        if let Some(parts) = item.get("content").and_then(|v| v.as_array()) {
+                            for part in parts {
+                                if part.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
+                                        if !text.is_empty() {
+                                            content.push(ContentBlock::Text {
+                                                text: text.to_string(),
+                                                provider_metadata: None,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Some("function_call") => {
+                        let name = item
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("unknown_tool")
+                            .to_string();
+                        let call_id = item
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| item.get("id").and_then(|v| v.as_str()))
+                            .unwrap_or("call_unknown")
+                            .to_string();
+                        let args = item
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}");
+                        let input: serde_json::Value =
+                            serde_json::from_str(args).unwrap_or_default();
+                        content.push(ContentBlock::ToolUse {
+                            id: call_id.clone(),
+                            name: name.clone(),
+                            input: input.clone(),
+                            provider_metadata: None,
+                        });
+                        tool_calls.push(ToolCall {
+                            id: call_id,
+                            name,
+                            input,
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        if content.is_empty() {
+            if let Some(text) = parsed.get("output_text").and_then(|v| v.as_str()) {
+                if !text.is_empty() {
+                    content.push(ContentBlock::Text {
+                        text: text.to_string(),
+                        provider_metadata: None,
+                    });
+                }
+            }
+        }
+
+        let mut usage = TokenUsage {
+            input_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default(),
+            output_tokens: parsed
+                .get("usage")
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or_default(),
+        };
+
+        if (!content.is_empty() || !tool_calls.is_empty())
+            && usage.input_tokens == 0
+            && usage.output_tokens == 0
+        {
+            usage.output_tokens = 1;
+        }
+
+        Ok(CompletionResponse {
+            content,
+            stop_reason: if tool_calls.is_empty() {
+                StopReason::EndTurn
+            } else {
+                StopReason::ToolUse
+            },
+            tool_calls,
+            usage,
+        })
+    }
+
+    fn parse_codex_oauth_sse(body: &str) -> Result<CompletionResponse, LlmError> {
+        let mut completed_response: Option<serde_json::Value> = None;
+        let mut text_content = String::new();
+        let mut tool_accum: Vec<(String, String, String)> = Vec::new();
+
+        let mut process_event = |event: serde_json::Value| -> Result<(), LlmError> {
+            match event.get("type").and_then(|v| v.as_str()) {
+                Some("error") => {
+                    let message = event
+                        .get("message")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| {
+                            event
+                                .get("error")
+                                .and_then(|e| e.get("message"))
+                                .and_then(|v| v.as_str())
+                        })
+                        .unwrap_or("Codex OAuth stream error")
+                        .to_string();
+                    return Err(LlmError::Api {
+                        status: 500,
+                        message,
+                    });
+                }
+                Some("response.failed") => {
+                    let message = event
+                        .get("response")
+                        .and_then(|r| r.get("error"))
+                        .and_then(|e| e.get("message"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("Codex OAuth response failed")
+                        .to_string();
+                    return Err(LlmError::Api {
+                        status: 500,
+                        message,
+                    });
+                }
+                Some("response.output_text.delta") => {
+                    if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                        text_content.push_str(delta);
+                    }
+                }
+                Some("response.output_text.done") if text_content.is_empty() => {
+                    if let Some(text) = event.get("text").and_then(|v| v.as_str()) {
+                        text_content.push_str(text);
+                    }
+                }
+                Some("response.output_item.added" | "response.output_item.done") => {
+                    if let Some(item) = event.get("item") {
+                        if item.get("type").and_then(|v| v.as_str()) == Some("function_call") {
+                            let idx = event
+                                .get("output_index")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(tool_accum.len() as u64)
+                                as usize;
+                            while tool_accum.len() <= idx {
+                                tool_accum.push((String::new(), String::new(), String::new()));
+                            }
+                            if let Some(id) = item
+                                .get("call_id")
+                                .and_then(|v| v.as_str())
+                                .or_else(|| item.get("id").and_then(|v| v.as_str()))
+                            {
+                                tool_accum[idx].0 = id.to_string();
+                            }
+                            if let Some(name) = item.get("name").and_then(|v| v.as_str()) {
+                                tool_accum[idx].1 = name.to_string();
+                            }
+                            if let Some(args) = item.get("arguments").and_then(|v| v.as_str()) {
+                                tool_accum[idx].2 = args.to_string();
+                            }
+                        }
+                    }
+                }
+                Some("response.function_call_arguments.delta") => {
+                    let idx = event
+                        .get("output_index")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    while tool_accum.len() <= idx {
+                        tool_accum.push((String::new(), String::new(), String::new()));
+                    }
+                    if let Some(delta) = event.get("delta").and_then(|v| v.as_str()) {
+                        tool_accum[idx].2.push_str(delta);
+                    }
+                }
+                Some("response.function_call_arguments.done") => {
+                    let idx = event
+                        .get("output_index")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0) as usize;
+                    while tool_accum.len() <= idx {
+                        tool_accum.push((String::new(), String::new(), String::new()));
+                    }
+                    if let Some(args) = event.get("arguments").and_then(|v| v.as_str()) {
+                        tool_accum[idx].2 = args.to_string();
+                    }
+                }
+                Some("response.completed" | "response.done") => {
+                    if let Some(response) = event.get("response") {
+                        completed_response = Some(response.clone());
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        };
+
+        let mut process_chunk = |chunk: &str| -> Result<(), LlmError> {
+            let data_lines: Vec<&str> = chunk
+                .lines()
+                .filter_map(|line| line.strip_prefix("data:"))
+                .map(str::trim)
+                .filter(|line| !line.is_empty() && *line != "[DONE]")
+                .collect();
+
+            if data_lines.is_empty() {
+                return Ok(());
+            }
+
+            let joined = data_lines.join("\n");
+            if let Ok(event) = serde_json::from_str::<serde_json::Value>(&joined) {
+                return process_event(event);
+            }
+
+            for line in data_lines {
+                if let Ok(event) = serde_json::from_str::<serde_json::Value>(line) {
+                    process_event(event)?;
+                }
+            }
+
+            Ok(())
+        };
+
+        let mut buffer = body.to_string();
+        loop {
+            let Some(idx) = buffer.find("\n\n") else {
+                break;
+            };
+            let chunk = buffer[..idx].to_string();
+            buffer = buffer[idx + 2..].to_string();
+            process_chunk(&chunk)?;
+        }
+        if !buffer.trim().is_empty() {
+            process_chunk(&buffer)?;
+        }
+
+        if let Some(response) = completed_response {
+            return Self::parse_codex_oauth_response(&response);
+        }
+
+        let mut content = Vec::new();
+        let mut tool_calls = Vec::new();
+
+        if !text_content.is_empty() {
+            content.push(ContentBlock::Text {
+                text: text_content,
+                provider_metadata: None,
+            });
+        }
+
+        for (id, name, arguments) in tool_accum {
+            if id.is_empty() && name.is_empty() {
+                continue;
+            }
+            let tool_id = if id.is_empty() {
+                "call_unknown".to_string()
+            } else {
+                id
+            };
+            let tool_name = if name.is_empty() {
+                "unknown_tool".to_string()
+            } else {
+                name
+            };
+            let input: serde_json::Value =
+                serde_json::from_str(&arguments).unwrap_or_default();
+            content.push(ContentBlock::ToolUse {
+                id: tool_id.clone(),
+                name: tool_name.clone(),
+                input: input.clone(),
+                provider_metadata: None,
+            });
+            tool_calls.push(ToolCall {
+                id: tool_id,
+                name: tool_name,
+                input,
+            });
+        }
+
+        if content.is_empty() && tool_calls.is_empty() {
+            return Err(LlmError::Parse(
+                "Empty Codex OAuth SSE response".to_string(),
+            ));
+        }
+
+        Ok(CompletionResponse {
+            content,
+            stop_reason: if tool_calls.is_empty() {
+                StopReason::EndTurn
+            } else {
+                StopReason::ToolUse
+            },
+            tool_calls,
+            usage: TokenUsage {
+                input_tokens: 0,
+                output_tokens: 1,
+            },
+        })
+    }
+
+    async fn complete_codex_oauth(
+        &self,
+        request: CompletionRequest,
+    ) -> Result<CompletionResponse, LlmError> {
+        let mut payload = serde_json::json!({
+            "model": canonical_model_name(&request.model),
+            "instructions": Self::codex_oauth_instructions(&request),
+            "input": Self::build_codex_oauth_input(&request),
+            "store": false,
+            "stream": true,
+            "parallel_tool_calls": true,
+            "text": { "verbosity": "medium" },
+            "reasoning": {
+                "effort": Self::codex_oauth_reasoning_effort(&request),
+                "summary": "auto",
+            },
+        });
+
+        let tools = Self::build_codex_oauth_tools(&request);
+        if !tools.is_empty() {
+            payload["tools"] = serde_json::Value::Array(tools);
+            payload["tool_choice"] = serde_json::json!("auto");
+        }
+
+        let url = format!("{}/responses", self.base_url.trim_end_matches('/'));
+        let mut req_builder = self
+            .client
+            .post(&url)
+            .header("content-type", "application/json")
+            .header("accept", "text/event-stream")
+            .header("openai-beta", "responses=experimental")
+            .header("originator", "pi")
+            .json(&payload);
+
+        if !self.api_key.as_str().is_empty() {
+            req_builder = req_builder
+                .header("authorization", format!("Bearer {}", self.api_key.as_str()));
+        }
+        for (k, v) in &self.extra_headers {
+            req_builder = req_builder.header(k, v);
+        }
+
+        let resp = req_builder
+            .send()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+
+        let status = resp.status().as_u16();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| LlmError::Http(e.to_string()))?;
+
+        if status == 429 {
+            return Err(LlmError::RateLimited {
+                retry_after_ms: 5_000,
+            });
+        }
+        if status == 401 || status == 403 {
+            return Err(LlmError::AuthenticationFailed(body));
+        }
+        if status == 404 {
+            return Err(LlmError::ModelNotFound(canonical_model_name(&request.model).to_string()));
+        }
+        if status >= 400 {
+            return Err(LlmError::Api {
+                status,
+                message: body,
+            });
+        }
+
+        if body.trim_start().starts_with("data:") || body.trim_start().starts_with("event:") {
+            return Self::parse_codex_oauth_sse(&body);
+        }
+
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).map_err(|e| LlmError::Parse(e.to_string()))?;
+        Self::parse_codex_oauth_response(&parsed)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -72,9 +599,15 @@ struct OaiRequest {
     thinking: Option<serde_json::Value>,
 }
 
+/// Strip any OpenFang provider prefix (for example `codex/`) so request
+/// compatibility logic can reason about the underlying OpenAI model family.
+fn canonical_model_name(model: &str) -> &str {
+    model.rsplit('/').next().unwrap_or(model)
+}
+
 /// Returns true if a model uses `max_completion_tokens` instead of `max_tokens`.
 fn uses_completion_tokens(model: &str) -> bool {
-    let m = model.to_lowercase();
+    let m = canonical_model_name(model).to_lowercase();
     m.starts_with("gpt-5")
         || m.starts_with("gpt5")
         || m.starts_with("o1")
@@ -88,7 +621,7 @@ fn uses_completion_tokens(model: &str) -> bool {
 /// `temperature=1` (the default). Sending any other value causes a 400 error.
 /// We proactively omit `temperature` for these models to avoid wasting a retry.
 fn rejects_temperature(model: &str) -> bool {
-    let m = model.to_lowercase();
+    let m = canonical_model_name(model).to_lowercase();
     // o-series reasoning models: o1, o1-mini, o1-preview, o3, o3-mini, o3-pro, o4-mini, etc.
     m.starts_with("o1")
         || m.starts_with("o3")
@@ -96,13 +629,17 @@ fn rejects_temperature(model: &str) -> bool {
         // GPT-5-mini is a reasoning model that rejects temperature
         || m.starts_with("gpt-5-mini")
         || m.starts_with("gpt5-mini")
+        // Codex GPT-5 variants expose reasoning but do not support the
+        // temperature controls used by non-reasoning chat models.
+        || m.ends_with("-codex")
+        || m.contains("-codex-")
         // Catch any model explicitly tagged as "reasoning"
         || m.contains("-reasoning")
 }
 
 /// Returns true if a model only accepts temperature = 1 (e.g. Moonshot Kimi K2/K2.5).
 fn temperature_must_be_one(model: &str) -> bool {
-    let m = model.to_lowercase();
+    let m = canonical_model_name(model).to_lowercase();
     m.starts_with("kimi-k2") || m == "kimi-k2.5" || m == "kimi-k2.5-0711"
 }
 
@@ -201,6 +738,10 @@ struct OaiUsage {
 #[async_trait]
 impl LlmDriver for OpenAIDriver {
     async fn complete(&self, request: CompletionRequest) -> Result<CompletionResponse, LlmError> {
+        if self.uses_codex_oauth_responses() {
+            return self.complete_codex_oauth(request).await;
+        }
+
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
         // Add system message if present
@@ -651,6 +1192,56 @@ impl LlmDriver for OpenAIDriver {
         request: CompletionRequest,
         tx: tokio::sync::mpsc::Sender<StreamEvent>,
     ) -> Result<CompletionResponse, LlmError> {
+        if self.uses_codex_oauth_responses() {
+            let response = self.complete(request).await?;
+            for block in &response.content {
+                match block {
+                    ContentBlock::Text { text, .. } => {
+                        let _ = tx
+                            .send(StreamEvent::TextDelta { text: text.clone() })
+                            .await;
+                    }
+                    ContentBlock::Thinking { thinking } => {
+                        let _ = tx
+                            .send(StreamEvent::ThinkingDelta {
+                                text: thinking.clone(),
+                            })
+                            .await;
+                    }
+                    ContentBlock::ToolUse { id, name, input, .. } => {
+                        let _ = tx
+                            .send(StreamEvent::ToolUseStart {
+                                id: id.clone(),
+                                name: name.clone(),
+                            })
+                            .await;
+                        let input_json =
+                            serde_json::to_string(input).unwrap_or_else(|_| "{}".to_string());
+                        if !input_json.is_empty() {
+                            let _ = tx
+                                .send(StreamEvent::ToolInputDelta { text: input_json })
+                                .await;
+                        }
+                        let _ = tx
+                            .send(StreamEvent::ToolUseEnd {
+                                id: id.clone(),
+                                name: name.clone(),
+                                input: input.clone(),
+                            })
+                            .await;
+                    }
+                    _ => {}
+                }
+            }
+            let _ = tx
+                .send(StreamEvent::ContentComplete {
+                    stop_reason: response.stop_reason.clone(),
+                    usage: response.usage.clone(),
+                })
+                .await;
+            return Ok(response);
+        }
+
         // Build request (same as complete but with stream: true)
         let mut oai_messages: Vec<OaiMessage> = Vec::new();
 
@@ -1501,6 +2092,14 @@ mod tests {
     }
 
     #[test]
+    fn test_rejects_temperature_codex_gpt5_models() {
+        assert!(rejects_temperature("gpt-5.2-codex"));
+        assert!(rejects_temperature("gpt-5.1-codex-max"));
+        assert!(rejects_temperature("codex/gpt-5.2-codex"));
+        assert!(rejects_temperature("codex/gpt-5.1-codex-mini"));
+    }
+
+    #[test]
     fn test_rejects_temperature_reasoning_suffix() {
         assert!(rejects_temperature("some-model-reasoning"));
         assert!(rejects_temperature("deepseek-r1-reasoning"));
@@ -1525,6 +2124,8 @@ mod tests {
         assert!(uses_completion_tokens("gpt-5-mini"));
         assert!(uses_completion_tokens("gpt-5-mini-2025-08-07"));
         assert!(uses_completion_tokens("gpt5-mini"));
+        assert!(uses_completion_tokens("codex/gpt-5.2-codex"));
+        assert!(uses_completion_tokens("codex/gpt-5.1-codex-max"));
     }
 
     #[test]
