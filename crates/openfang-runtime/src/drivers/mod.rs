@@ -553,7 +553,7 @@ mod tests {
     #[test]
     fn test_provider_defaults_codex_oauth() {
         let d = provider_defaults("codex-oauth").unwrap();
-        assert_eq!(d.base_url, OPENAI_BASE_URL);
+        assert_eq!(d.base_url, "https://chatgpt.com/backend-api/codex");
         assert_eq!(d.api_key_env, "CODEX_OAUTH_TOKEN");
         assert!(d.key_required);
     }

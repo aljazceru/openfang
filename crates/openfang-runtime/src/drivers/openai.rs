@@ -1235,8 +1235,8 @@ impl LlmDriver for OpenAIDriver {
             }
             let _ = tx
                 .send(StreamEvent::ContentComplete {
-                    stop_reason: response.stop_reason.clone(),
-                    usage: response.usage.clone(),
+                    stop_reason: response.stop_reason,
+                    usage: response.usage,
                 })
                 .await;
             return Ok(response);

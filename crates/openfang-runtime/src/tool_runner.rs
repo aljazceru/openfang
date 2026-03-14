@@ -182,9 +182,9 @@ pub async fn execute_tool(
     debug!(tool_name, "Executing tool");
     let result = match tool_name {
         // Filesystem tools
-        "file_read" => tool_file_read(input, workspace_root).await,
-        "file_write" => tool_file_write(input, workspace_root).await,
-        "file_list" => tool_file_list(input, workspace_root).await,
+        "file_read" => tool_file_read(input, workspace_root, exec_policy).await,
+        "file_write" => tool_file_write(input, workspace_root, exec_policy).await,
+        "file_list" => tool_file_list(input, workspace_root, exec_policy).await,
         "apply_patch" => tool_apply_patch(input, workspace_root).await,
 
         // Web tools (upgraded: multi-provider search, SSRF-protected fetch)
@@ -220,18 +220,22 @@ pub async fn execute_tool(
         // Shell tool — metacharacter check + exec policy + taint check
         "shell_exec" => {
             let command = input["command"].as_str().unwrap_or("");
+            let is_full_exec = exec_policy
+                .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
 
-            // SECURITY: Always check for shell metacharacters, even in Full mode.
-            // These enable command injection regardless of exec policy.
-            if let Some(reason) = crate::subprocess_sandbox::contains_shell_metacharacters(command) {
-                return ToolResult {
-                    tool_use_id: tool_use_id.to_string(),
-                    content: format!(
-                        "shell_exec blocked: command contains {reason}. \
-                         Shell metacharacters are never allowed."
-                    ),
-                    is_error: true,
-                };
+            if !is_full_exec {
+                if let Some(reason) =
+                    crate::subprocess_sandbox::contains_shell_metacharacters(command)
+                {
+                    return ToolResult {
+                        tool_use_id: tool_use_id.to_string(),
+                        content: format!(
+                            "shell_exec blocked: command contains {reason}. \
+                             Shell metacharacters are not allowed outside full exec mode."
+                        ),
+                        is_error: true,
+                    };
+                }
             }
 
             // Exec policy enforcement (allowlist / deny / full)
@@ -251,8 +255,6 @@ pub async fn execute_tool(
                 }
             }
             // Skip heuristic taint patterns for Full exec policy (e.g. hand agents that need curl)
-            let is_full_exec = exec_policy
-                .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
             if !is_full_exec {
                 if let Some(violation) = check_taint_shell_exec(command) {
                     return ToolResult {
@@ -1257,12 +1259,35 @@ fn resolve_file_path(raw_path: &str, workspace_root: Option<&Path>) -> Result<Pa
     }
 }
 
+fn resolve_file_path_with_policy(
+    raw_path: &str,
+    workspace_root: Option<&Path>,
+    exec_policy: Option<&openfang_types::config::ExecPolicy>,
+) -> Result<PathBuf, String> {
+    let is_full_exec = exec_policy
+        .is_some_and(|p| p.mode == openfang_types::config::ExecSecurityMode::Full);
+
+    if is_full_exec {
+        let path = Path::new(raw_path);
+        return Ok(if path.is_absolute() {
+            path.to_path_buf()
+        } else if let Some(root) = workspace_root {
+            root.join(path)
+        } else {
+            PathBuf::from(raw_path)
+        });
+    }
+
+    resolve_file_path(raw_path, workspace_root)
+}
+
 async fn tool_file_read(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    exec_policy: Option<&openfang_types::config::ExecPolicy>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path_with_policy(raw_path, workspace_root, exec_policy)?;
     tokio::fs::read_to_string(&resolved)
         .await
         .map_err(|e| format!("Failed to read file: {e}"))
@@ -1271,9 +1296,10 @@ async fn tool_file_read(
 async fn tool_file_write(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    exec_policy: Option<&openfang_types::config::ExecPolicy>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path_with_policy(raw_path, workspace_root, exec_policy)?;
     let content = input["content"]
         .as_str()
         .ok_or("Missing 'content' parameter")?;
@@ -1295,9 +1321,10 @@ async fn tool_file_write(
 async fn tool_file_list(
     input: &serde_json::Value,
     workspace_root: Option<&Path>,
+    exec_policy: Option<&openfang_types::config::ExecPolicy>,
 ) -> Result<String, String> {
     let raw_path = input["path"].as_str().ok_or("Missing 'path' parameter")?;
-    let resolved = resolve_file_path(raw_path, workspace_root)?;
+    let resolved = resolve_file_path_with_policy(raw_path, workspace_root, exec_policy)?;
     let mut entries = tokio::fs::read_dir(&resolved)
         .await
         .map_err(|e| format!("Failed to list directory: {e}"))?;
@@ -1531,9 +1558,8 @@ async fn tool_shell_exec(
             let stderr = String::from_utf8_lossy(&output.stderr);
             let exit_code = output.status.code().unwrap_or(-1);
 
-            // Truncate very long outputs to prevent memory issues
-            let max_output = 100_000;
-            let stdout_str = if stdout.len() > max_output {
+            let max_output = exec_policy.map(|p| p.max_output_bytes).unwrap_or(100_000);
+            let stdout_str = if max_output > 0 && stdout.len() > max_output {
                 format!(
                     "{}...\n[truncated, {} total bytes]",
                     crate::str_utils::safe_truncate_str(&stdout, max_output),
@@ -1542,7 +1568,7 @@ async fn tool_shell_exec(
             } else {
                 stdout.to_string()
             };
-            let stderr_str = if stderr.len() > max_output {
+            let stderr_str = if max_output > 0 && stderr.len() > max_output {
                 format!(
                     "{}...\n[truncated, {} total bytes]",
                     crate::str_utils::safe_truncate_str(&stderr, max_output),
@@ -3598,7 +3624,7 @@ mod tests {
         let result = execute_tool(
             "test-id",
             "fs-write", // LLM-hallucinated alias
-            &serde_json::json!({"path": "/nonexistent/file.txt", "content": "hello"}),
+            &serde_json::json!({"path": "/tmp/openfang-alias-test.txt", "content": "hello"}),
             None,
             Some(&allowed),
             None,
