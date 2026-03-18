@@ -445,7 +445,21 @@ pub async fn execute_tool(
                 if let Some(mcp_conns) = mcp_connections {
                     if let Some(server_name) = mcp::extract_mcp_server(other) {
                         let mut conns = mcp_conns.lock().await;
-                        if let Some(conn) = conns.iter_mut().find(|c| c.name() == server_name) {
+                        if let Some(conn) = conns
+                            .iter_mut()
+                            .find(|c| c.tools().iter().any(|t| t.name == other))
+                        {
+                            let resolved_server = conn.name().to_string();
+                            debug!(
+                                tool = other,
+                                server = %resolved_server,
+                                "Dispatching to MCP server"
+                            );
+                            match conn.call_tool(other, input).await {
+                                Ok(content) => Ok(content),
+                                Err(e) => Err(format!("MCP tool call failed: {e}")),
+                            }
+                        } else if let Some(conn) = conns.iter_mut().find(|c| c.name() == server_name) {
                             debug!(
                                 tool = other,
                                 server = server_name,

@@ -1602,18 +1602,35 @@ impl OpenFangKernel {
                 label: None,
             });
 
+        let tools = self.available_tools(agent_id);
+        let tools = entry.mode.filter_tools(tools);
+
+        // Look up model's actual context window from the catalog
+        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
+            cat.find_model(&entry.manifest.model.model)
+                .map(|m| m.context_window as usize)
+        });
+
         // Check if auto-compaction is needed: message-count OR token-count trigger
         let needs_compact = {
             use openfang_runtime::compactor::{
                 estimate_token_count, needs_compaction as check_compact,
                 needs_compaction_by_tokens, CompactionConfig,
             };
-            let config = CompactionConfig::default();
+            let mut config = CompactionConfig::default();
+            if let Some(ctx) = ctx_window {
+                config.context_window_tokens = ctx;
+            }
+            if entry.manifest.autonomous.is_some() {
+                config.threshold = config.threshold.min(16);
+                config.keep_recent = config.keep_recent.min(4);
+                config.token_threshold_ratio = config.token_threshold_ratio.min(0.45);
+            }
             let by_messages = check_compact(&session, &config);
             let estimated = estimate_token_count(
                 &session.messages,
                 Some(&entry.manifest.model.system_prompt),
-                None,
+                Some(&tools),
             );
             let by_tokens = needs_compaction_by_tokens(estimated, &config);
             if by_tokens && !by_messages {
@@ -1627,15 +1644,7 @@ impl OpenFangKernel {
             by_messages || by_tokens
         };
 
-        let tools = self.available_tools(agent_id);
-        let tools = entry.mode.filter_tools(tools);
         let driver = self.resolve_driver(&entry.manifest)?;
-
-        // Look up model's actual context window from the catalog
-        let ctx_window = self.model_catalog.read().ok().and_then(|cat| {
-            cat.find_model(&entry.manifest.model.model)
-                .map(|m| m.context_window as usize)
-        });
 
         let (tx, rx) = tokio::sync::mpsc::channel::<StreamEvent>(64);
         let mut manifest = entry.manifest.clone();
@@ -1893,8 +1902,20 @@ impl OpenFangKernel {
                         use openfang_runtime::compactor::{
                             estimate_token_count, needs_compaction_by_tokens, CompactionConfig,
                         };
-                        let config = CompactionConfig::default();
-                        let estimated = estimate_token_count(&session.messages, None, None);
+                        let mut config = CompactionConfig::default();
+                        if let Some(ctx) = ctx_window {
+                            config.context_window_tokens = ctx;
+                        }
+                        if manifest.autonomous.is_some() {
+                            config.threshold = config.threshold.min(16);
+                            config.keep_recent = config.keep_recent.min(4);
+                            config.token_threshold_ratio = config.token_threshold_ratio.min(0.45);
+                        }
+                        let estimated = estimate_token_count(
+                            &session.messages,
+                            Some(&manifest.model.system_prompt),
+                            Some(&tools),
+                        );
                         if needs_compaction_by_tokens(estimated, &config) {
                             let kc = kernel_clone.clone();
                             tokio::spawn(async move {

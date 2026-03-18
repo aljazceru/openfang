@@ -53,8 +53,7 @@ api_key_env = "GROQ_API_KEY"
 continuous = { check_interval_secs = 120 }
 
 [resources]
-max_llm_tokens_per_hour = 500000
-
+max_llm_tokens_per_hour = 0
 [capabilities]
 tools = ["agent_send", "agent_spawn", "agent_list", "agent_kill", "memory_store", "memory_recall", "file_read", "file_write"]
 memory_read = ["*"]

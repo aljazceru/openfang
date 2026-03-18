@@ -2,7 +2,7 @@
 
 use dashmap::DashMap;
 use openfang_types::agent::{AgentId, ResourceQuota};
-use openfang_types::error::{OpenFangError, OpenFangResult};
+use openfang_types::error::OpenFangResult;
 use openfang_types::message::TokenUsage;
 use std::time::Instant;
 use tokio::task::JoinHandle;
@@ -91,10 +91,12 @@ impl AgentScheduler {
         if quota.max_llm_tokens_per_hour > 0
             && tracker.total_tokens > quota.max_llm_tokens_per_hour
         {
-            return Err(OpenFangError::QuotaExceeded(format!(
-                "Token limit exceeded: {} / {}",
-                tracker.total_tokens, quota.max_llm_tokens_per_hour
-            )));
+            debug!(
+                agent_id = %agent_id,
+                used_tokens = tracker.total_tokens,
+                configured_limit = quota.max_llm_tokens_per_hour,
+                "LLM token quota exceeded but enforcement is disabled"
+            );
         }
 
         Ok(())

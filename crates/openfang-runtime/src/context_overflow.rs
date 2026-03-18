@@ -42,17 +42,17 @@ pub fn recover_from_overflow(
     context_window: usize,
 ) -> RecoveryStage {
     let estimated = estimate_tokens(messages, system_prompt, tools);
-    let threshold_70 = (context_window as f64 * 0.70) as usize;
-    let threshold_90 = (context_window as f64 * 0.90) as usize;
+    let threshold_55 = (context_window as f64 * 0.55) as usize;
+    let threshold_75 = (context_window as f64 * 0.75) as usize;
 
     // No recovery needed
-    if estimated <= threshold_70 {
+    if estimated <= threshold_55 {
         return RecoveryStage::None;
     }
 
-    // Stage 1: Moderate trim — keep last 10 messages
-    if estimated <= threshold_90 {
-        let keep = 10.min(messages.len());
+    // Stage 1: Moderate trim — keep last 8 messages
+    if estimated <= threshold_75 {
+        let keep = 8.min(messages.len());
         let remove = messages.len() - keep;
         if remove > 0 {
             debug!(
@@ -63,15 +63,15 @@ pub fn recover_from_overflow(
             messages.drain(..remove);
             // Re-check after trim
             let new_est = estimate_tokens(messages, system_prompt, tools);
-            if new_est <= threshold_70 {
+            if new_est <= threshold_55 {
                 return RecoveryStage::AutoCompaction { removed: remove };
             }
         }
     }
 
-    // Stage 2: Aggressive trim — keep last 4 messages + summary marker
+    // Stage 2: Aggressive trim — keep last 3 messages + summary marker
     {
-        let keep = 4.min(messages.len());
+        let keep = 3.min(messages.len());
         let remove = messages.len() - keep;
         if remove > 0 {
             warn!(
@@ -88,14 +88,14 @@ pub fn recover_from_overflow(
             messages.insert(0, summary);
 
             let new_est = estimate_tokens(messages, system_prompt, tools);
-            if new_est <= threshold_90 {
+            if new_est <= threshold_75 {
                 return RecoveryStage::OverflowCompaction { removed: remove };
             }
         }
     }
 
-    // Stage 3: Truncate all historical tool results to 2K chars
-    let tool_truncation_limit = 2000;
+    // Stage 3: Truncate all historical tool results to 1K chars
+    let tool_truncation_limit = 1000;
     let mut truncated = 0;
     for msg in messages.iter_mut() {
         if let MessageContent::Blocks(blocks) = &mut msg.content {
@@ -122,7 +122,7 @@ pub fn recover_from_overflow(
 
     if truncated > 0 {
         let new_est = estimate_tokens(messages, system_prompt, tools);
-        if new_est <= threshold_90 {
+        if new_est <= threshold_75 {
             return RecoveryStage::ToolResultTruncation { truncated };
         }
         warn!(

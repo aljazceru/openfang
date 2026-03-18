@@ -55,7 +55,7 @@ TOOLS AVAILABLE:
 You are enthusiastic, detail-oriented, and practical. You turn travel dreams into well-organized, memorable trips."""
 
 [resources]
-max_llm_tokens_per_hour = 150000
+max_llm_tokens_per_hour = 0
 max_concurrent_tools = 5
 
 [capabilities]

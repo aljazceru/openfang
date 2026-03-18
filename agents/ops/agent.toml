@@ -32,8 +32,7 @@ REPORTING:
 periodic = { cron = "every 5m" }
 
 [resources]
-max_llm_tokens_per_hour = 50000
-
+max_llm_tokens_per_hour = 0
 [capabilities]
 tools = ["shell_exec", "file_read", "file_list"]
 memory_read = ["*"]

@@ -49,16 +49,16 @@ pub struct CompactionConfig {
 impl Default for CompactionConfig {
     fn default() -> Self {
         Self {
-            threshold: 30,
-            keep_recent: 10,
+            threshold: 20,
+            keep_recent: 6,
             max_summary_tokens: 1024,
-            base_chunk_ratio: 0.4,
-            min_chunk_ratio: 0.15,
+            base_chunk_ratio: 0.3,
+            min_chunk_ratio: 0.12,
             safety_margin: 1.2,
             summarization_overhead_tokens: 4096,
             max_chunk_chars: 80_000,
             max_retries: 3,
-            token_threshold_ratio: 0.7,
+            token_threshold_ratio: 0.55,
             context_window_tokens: 200_000,
         }
     }
