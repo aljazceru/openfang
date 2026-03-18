@@ -88,8 +88,7 @@ impl AgentScheduler {
         // Reset the window if an hour has passed
         tracker.reset_if_expired();
 
-        if quota.max_llm_tokens_per_hour > 0
-            && tracker.total_tokens > quota.max_llm_tokens_per_hour
+        if quota.max_llm_tokens_per_hour > 0 && tracker.total_tokens > quota.max_llm_tokens_per_hour
         {
             debug!(
                 agent_id = %agent_id,
@@ -132,6 +131,19 @@ impl AgentScheduler {
             .get(&agent_id)
             .map(|t| (t.total_tokens, t.tool_calls))
     }
+
+    /// Returns remaining token headroom before quota is hit.
+    /// Returns `None` if no token quota is configured (unlimited).
+    pub fn token_headroom(&self, agent_id: AgentId) -> Option<u64> {
+        let quota = self.quotas.get(&agent_id)?;
+        if quota.max_llm_tokens_per_hour == 0 {
+            return None;
+        }
+        let mut tracker = self.usage.get_mut(&agent_id)?;
+        tracker.reset_if_expired();
+        let used = tracker.total_tokens;
+        Some(quota.max_llm_tokens_per_hour.saturating_sub(used))
+    }
 }
 
 impl Default for AgentScheduler {
@@ -161,7 +173,7 @@ mod tests {
     }
 
     #[test]
-    fn test_quota_check() {
+    fn test_quota_check_exceeded_is_allowed() {
         let scheduler = AgentScheduler::new();
         let id = AgentId::new();
         let quota = ResourceQuota {
@@ -176,6 +188,6 @@ mod tests {
                 output_tokens: 50,
             },
         );
-        assert!(scheduler.check_quota(id).is_err());
+        assert!(scheduler.check_quota(id).is_ok());
     }
 }

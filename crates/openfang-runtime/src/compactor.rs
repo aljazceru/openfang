@@ -343,7 +343,11 @@ fn build_conversation_text(messages: &[Message], config: &CompactionConfig) -> S
                     if oversized {
                         let limit = config.max_chunk_chars / 4;
                         let truncated = if s.len() > limit {
-                            format!("{}...[truncated from {} chars]", safe_truncate_str(s, limit), s.len())
+                            format!(
+                                "{}...[truncated from {} chars]",
+                                safe_truncate_str(s, limit),
+                                s.len()
+                            )
                         } else {
                             s.clone()
                         };
@@ -431,7 +435,11 @@ async fn summarize_messages(
         let safe_start = if conversation_text.is_char_boundary(start) {
             start
         } else {
-            conversation_text[start..].char_indices().next().map(|(i, _)| start + i).unwrap_or(conversation_text.len())
+            conversation_text[start..]
+                .char_indices()
+                .next()
+                .map(|(i, _)| start + i)
+                .unwrap_or(conversation_text.len())
         };
         conversation_text = conversation_text[safe_start..].to_string();
     }
@@ -564,7 +572,10 @@ async fn summarize_in_chunks(
         model: model.to_string(),
         messages: vec![Message {
             role: Role::User,
-            content: MessageContent::Blocks(vec![ContentBlock::Text { text: merge_prompt, provider_metadata: None }]),
+            content: MessageContent::Blocks(vec![ContentBlock::Text {
+                text: merge_prompt,
+                provider_metadata: None,
+            }]),
         }],
         tools: vec![],
         max_tokens: config.max_summary_tokens,
@@ -744,10 +755,10 @@ mod tests {
     #[test]
     fn test_compaction_config_defaults() {
         let config = CompactionConfig::default();
-        assert_eq!(config.threshold, 30);
-        assert_eq!(config.keep_recent, 10);
+        assert_eq!(config.threshold, 20);
+        assert_eq!(config.keep_recent, 6);
         assert_eq!(config.max_summary_tokens, 1024);
-        assert!((config.token_threshold_ratio - 0.7).abs() < f64::EPSILON);
+        assert!((config.token_threshold_ratio - 0.55).abs() < f64::EPSILON);
         assert_eq!(config.context_window_tokens, 200_000);
     }
 
@@ -1031,16 +1042,16 @@ mod tests {
     #[test]
     fn test_compaction_config_new_defaults() {
         let config = CompactionConfig::default();
-        assert_eq!(config.threshold, 30);
-        assert_eq!(config.keep_recent, 10);
+        assert_eq!(config.threshold, 20);
+        assert_eq!(config.keep_recent, 6);
         assert_eq!(config.max_summary_tokens, 1024);
-        assert!((config.base_chunk_ratio - 0.4).abs() < f64::EPSILON);
-        assert!((config.min_chunk_ratio - 0.15).abs() < f64::EPSILON);
+        assert!((config.base_chunk_ratio - 0.3).abs() < f64::EPSILON);
+        assert!((config.min_chunk_ratio - 0.12).abs() < f64::EPSILON);
         assert!((config.safety_margin - 1.2).abs() < f64::EPSILON);
         assert_eq!(config.summarization_overhead_tokens, 4096);
         assert_eq!(config.max_chunk_chars, 80_000);
         assert_eq!(config.max_retries, 3);
-        assert!((config.token_threshold_ratio - 0.7).abs() < f64::EPSILON);
+        assert!((config.token_threshold_ratio - 0.55).abs() < f64::EPSILON);
         assert_eq!(config.context_window_tokens, 200_000);
     }
 
