@@ -29,6 +29,22 @@ struct ProviderInfo {
 
 const PROVIDERS: &[ProviderInfo] = &[
     ProviderInfo {
+        name: "codex-oauth",
+        display: "Codex OAuth",
+        env_var: "CODEX_OAUTH_TOKEN",
+        default_model: "gpt-5.4",
+        needs_key: true,
+        hint: "uses ~/.codex/auth.json",
+    },
+    ProviderInfo {
+        name: "codex",
+        display: "OpenAI Codex",
+        env_var: "OPENAI_API_KEY",
+        default_model: "gpt-5.4",
+        needs_key: true,
+        hint: "uses OpenAI or Codex auth",
+    },
+    ProviderInfo {
         name: "groq",
         display: "Groq",
         env_var: "GROQ_API_KEY",
@@ -389,25 +405,14 @@ impl State {
 
     fn build_provider_order(&mut self) {
         self.provider_order.clear();
-        let gemini_via_google = std::env::var("GOOGLE_API_KEY").is_ok();
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected = if p.name == "claude-code" {
-                openfang_runtime::drivers::claude_code::claude_code_available()
-            } else {
-                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
-                    || (p.name == "gemini" && gemini_via_google)
-            };
+            let detected = provider_is_detected(p);
             if detected {
                 self.provider_order.push(i);
             }
         }
         for (i, p) in PROVIDERS.iter().enumerate() {
-            let detected = if p.name == "claude-code" {
-                openfang_runtime::drivers::claude_code::claude_code_available()
-            } else {
-                (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
-                    || (p.name == "gemini" && gemini_via_google)
-            };
+            let detected = provider_is_detected(p);
             if !detected {
                 self.provider_order.push(i);
             }
@@ -445,12 +450,7 @@ impl State {
     }
 
     fn is_provider_detected(&self, prov_idx: usize) -> bool {
-        let p = &PROVIDERS[prov_idx];
-        if p.name == "claude-code" {
-            return openfang_runtime::drivers::claude_code::claude_code_available();
-        }
-        (!p.env_var.is_empty() && std::env::var(p.env_var).is_ok())
-            || (p.name == "gemini" && std::env::var("GOOGLE_API_KEY").is_ok())
+        provider_is_detected(&PROVIDERS[prov_idx])
     }
 
     /// Populate model_entries from the catalog for the selected provider.
@@ -566,6 +566,26 @@ impl State {
             .position(|e| e.id == *target)
             .unwrap_or(0);
         self.routing_tier_list.select(Some(idx));
+    }
+}
+
+fn provider_is_detected(p: &ProviderInfo) -> bool {
+    if p.name == "claude-code" {
+        return openfang_runtime::drivers::claude_code::claude_code_available();
+    }
+
+    if !p.env_var.is_empty() && std::env::var(p.env_var).is_ok() {
+        return true;
+    }
+
+    match p.name {
+        "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+        "codex" => {
+            std::env::var("OPENAI_API_KEY").is_ok()
+                || openfang_runtime::model_catalog::read_codex_credential().is_some()
+        }
+        "codex-oauth" => openfang_runtime::model_catalog::read_codex_oauth_access_token().is_some(),
+        _ => false,
     }
 }
 
