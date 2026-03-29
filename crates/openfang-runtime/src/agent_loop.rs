@@ -2971,6 +2971,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -3024,6 +3025,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -3079,6 +3081,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -3132,6 +3135,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -3178,6 +3182,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -3301,7 +3306,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -3348,7 +3354,8 @@ mod tests {
             None,
             None,
             None,
-            None,
+            None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -3404,6 +3411,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -4292,6 +4300,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
@@ -4359,6 +4368,7 @@ mod tests {
             None,
             None,
             None,
+            None, // thinking_config
             None,
             None,
             None, // user_content_blocks
@@ -4422,6 +4432,7 @@ mod tests {
             None, // tts_engine
             None, // docker_config
             None, // hooks
+            None, // thinking_config
             None, // context_window_tokens
             None, // process_manager
             None, // user_content_blocks
