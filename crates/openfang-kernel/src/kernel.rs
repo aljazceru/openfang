@@ -4088,21 +4088,32 @@ impl OpenFangKernel {
                                 .await
                                 {
                                     Ok(Ok(result)) => {
-                                        match cron_deliver_response(
-                                            &kernel,
-                                            agent_id,
-                                            &result.response,
-                                            &delivery,
-                                        )
-                                        .await
-                                        {
-                                            Ok(()) => {
-                                                tracing::info!(job = %job_name, "Cron job completed successfully");
-                                                kernel.cron_scheduler.record_success(job_id);
-                                            }
-                                            Err(e) => {
-                                                tracing::warn!(job = %job_name, error = %e, "Cron job delivery failed");
-                                                kernel.cron_scheduler.record_failure(job_id, &e);
+                                        // Skip delivery if the agent flagged silent or
+                                        // responded with only "SILENT" / "NO_REPLY".
+                                        let trimmed = result.response.trim();
+                                        let should_suppress = result.silent
+                                            || trimmed.eq_ignore_ascii_case("silent")
+                                            || trimmed.eq_ignore_ascii_case("no_reply");
+                                        if should_suppress {
+                                            tracing::info!(job = %job_name, "Cron job completed (delivery suppressed — silent)");
+                                            kernel.cron_scheduler.record_success(job_id);
+                                        } else {
+                                            match cron_deliver_response(
+                                                &kernel,
+                                                agent_id,
+                                                &result.response,
+                                                &delivery,
+                                            )
+                                            .await
+                                            {
+                                                Ok(()) => {
+                                                    tracing::info!(job = %job_name, "Cron job completed successfully");
+                                                    kernel.cron_scheduler.record_success(job_id);
+                                                }
+                                                Err(e) => {
+                                                    tracing::warn!(job = %job_name, error = %e, "Cron job delivery failed");
+                                                    kernel.cron_scheduler.record_failure(job_id, &e);
+                                                }
                                             }
                                         }
                                     }

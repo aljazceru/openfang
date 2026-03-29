@@ -134,6 +134,23 @@ impl TelegramAdapter {
             if !status.is_success() {
                 let body_text = resp.text().await.unwrap_or_default();
                 warn!("Telegram sendMessage failed ({status}): {body_text}");
+                // Retry without parse_mode — the text may be markdown, not HTML
+                let mut retry_body = serde_json::json!({
+                    "chat_id": chat_id,
+                    "text": chunk,
+                });
+                if let Some(tid) = thread_id {
+                    retry_body["message_thread_id"] = serde_json::json!(tid);
+                }
+                let retry_resp = self.client.post(&url).json(&retry_body).send().await?;
+                let retry_status = retry_resp.status();
+                if !retry_status.is_success() {
+                    let retry_text = retry_resp.text().await.unwrap_or_default();
+                    return Err(format!(
+                        "Telegram sendMessage failed even without parse_mode ({retry_status}): {retry_text}",
+                    )
+                    .into());
+                }
             }
         }
         Ok(())
