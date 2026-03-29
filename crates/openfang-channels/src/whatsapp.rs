@@ -258,8 +258,7 @@ impl ChannelAdapter for WhatsAppAdapter {
                     "https://graph.facebook.com/v21.0/{}/messages",
                     self.phone_number_id
                 );
-                let resp = self
-                    .client
+                let resp = self.client
                     .post(&api_url)
                     .bearer_auth(&*self.access_token)
                     .json(&body)
@@ -285,8 +284,7 @@ impl ChannelAdapter for WhatsAppAdapter {
                     "https://graph.facebook.com/v21.0/{}/messages",
                     self.phone_number_id
                 );
-                let resp = self
-                    .client
+                let resp = self.client
                     .post(&api_url)
                     .bearer_auth(&*self.access_token)
                     .json(&body)
@@ -312,8 +310,7 @@ impl ChannelAdapter for WhatsAppAdapter {
                     "https://graph.facebook.com/v21.0/{}/messages",
                     self.phone_number_id
                 );
-                let resp = self
-                    .client
+                let resp = self.client
                     .post(&api_url)
                     .bearer_auth(&*self.access_token)
                     .json(&body)
