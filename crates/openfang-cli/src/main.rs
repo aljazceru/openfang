@@ -1377,7 +1377,7 @@ fn detect_best_provider() -> (&'static str, &'static str, &'static str) {
     let providers = provider_list();
 
     for (p, env_var, m, display) in &providers {
-        if std::env::var(env_var).is_ok() {
+        if provider_has_auth(p, env_var) {
             ui::success(&format!("Detected {display} ({env_var})"));
             return (p, env_var, m);
         }
@@ -1398,9 +1398,32 @@ fn detect_best_provider() -> (&'static str, &'static str, &'static str) {
     ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile")
 }
 
+fn provider_has_auth(provider: &str, env_var: &str) -> bool {
+    if !env_var.is_empty() && std::env::var(env_var).is_ok() {
+        return true;
+    }
+
+    match provider {
+        "gemini" => std::env::var("GOOGLE_API_KEY").is_ok(),
+        "codex" => {
+            std::env::var("OPENAI_API_KEY").is_ok()
+                || openfang_runtime::model_catalog::read_codex_credential().is_some()
+        }
+        "codex-oauth" => openfang_runtime::model_catalog::read_codex_oauth_access_token().is_some(),
+        _ => false,
+    }
+}
+
 /// Static list of supported providers: (id, env_var, default_model, display_name).
 fn provider_list() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
     vec![
+        (
+            "codex-oauth",
+            "CODEX_OAUTH_TOKEN",
+            "gpt-5.4",
+            "Codex OAuth",
+        ),
+        ("codex", "OPENAI_API_KEY", "gpt-5.4", "OpenAI Codex"),
         ("groq", "GROQ_API_KEY", "llama-3.3-70b-versatile", "Groq"),
         ("gemini", "GEMINI_API_KEY", "gemini-2.5-flash", "Gemini"),
         ("deepseek", "DEEPSEEK_API_KEY", "deepseek-chat", "DeepSeek"),

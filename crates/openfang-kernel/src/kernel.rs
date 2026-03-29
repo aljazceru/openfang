@@ -1968,6 +1968,7 @@ impl OpenFangKernel {
                     None
                 },
                 Some(&kernel_clone.hooks),
+                kernel_clone.config.thinking.as_ref(),
                 ctx_window,
                 Some(&kernel_clone.process_manager),
                 content_blocks,
@@ -2540,6 +2541,7 @@ impl OpenFangKernel {
                 None
             },
             Some(&self.hooks),
+            self.config.thinking.as_ref(),
             ctx_window,
             Some(&self.process_manager),
             content_blocks,

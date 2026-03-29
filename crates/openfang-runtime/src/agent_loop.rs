@@ -168,6 +168,7 @@ pub async fn run_agent_loop(
     tts_engine: Option<&crate::tts::TtsEngine>,
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     hooks: Option<&crate::hooks::HookRegistry>,
+    thinking_config: Option<&openfang_types::config::ThinkingConfig>,
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
@@ -382,7 +383,7 @@ pub async fn run_agent_loop(
             max_tokens: manifest.model.max_tokens,
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
-            thinking: None,
+            thinking: thinking_config.cloned(),
         };
 
         // Notify phase: Thinking
@@ -1183,6 +1184,7 @@ pub async fn run_agent_loop_streaming(
     tts_engine: Option<&crate::tts::TtsEngine>,
     docker_config: Option<&openfang_types::config::DockerSandboxConfig>,
     hooks: Option<&crate::hooks::HookRegistry>,
+    thinking_config: Option<&openfang_types::config::ThinkingConfig>,
     context_window_tokens: Option<usize>,
     process_manager: Option<&crate::process_manager::ProcessManager>,
     user_content_blocks: Option<Vec<ContentBlock>>,
@@ -1401,7 +1403,7 @@ pub async fn run_agent_loop_streaming(
             max_tokens: manifest.model.max_tokens,
             temperature: manifest.model.temperature,
             system: Some(system_prompt.clone()),
-            thinking: None,
+            thinking: thinking_config.cloned(),
         };
 
         // Notify phase: on first iteration emit Streaming; on subsequent
